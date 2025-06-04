@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/pem"
 	"flag"
 	"fmt"
@@ -20,9 +23,8 @@ import (
 )
 
 const (
-	keyType     = "ed25519"
-	keySize     = 256
-	defaultPort = "22"
+	defaultKeyType = "ed25519"
+	defaultPort    = "22"
 )
 
 type Config struct {
@@ -30,12 +32,14 @@ type Config struct {
 	Port     string
 	Username string
 	KeyPath  string
+	KeyType  string
 }
 
 func main() {
 	var (
-		port = flag.String("port", defaultPort, "SSH port")
-		help = flag.Bool("help", false, "Show help")
+		port    = flag.String("port", defaultPort, "SSH port")
+		keyType = flag.String("type", defaultKeyType, "Key type (ed25519, rsa, ecdsa)")
+		help    = flag.Bool("help", false, "Show help")
 	)
 	flag.Parse()
 
@@ -50,7 +54,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	config, err := parseTarget(args[0], *port)
+	config, err := parseTarget(args[0], *port, *keyType)
 	if err != nil {
 		log.Fatalf("Error parsing target: %v", err)
 	}
@@ -66,12 +70,13 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  keyswap [options] user@hostname")
 	fmt.Println("  keyswap --port 2222 user@hostname")
+	fmt.Println("  keyswap --type rsa user@hostname")
 	fmt.Println()
 	fmt.Println("Options:")
 	flag.PrintDefaults()
 }
 
-func parseTarget(target, port string) (*Config, error) {
+func parseTarget(target, port, keyType string) (*Config, error) {
 	parts := strings.Split(target, "@")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("target must be in format user@hostname")
@@ -86,6 +91,16 @@ func parseTarget(target, port string) (*Config, error) {
 
 	if host == "" {
 		return nil, fmt.Errorf("hostname cannot be empty")
+	}
+
+	// Validate key type
+	validKeyTypes := map[string]bool{
+		"ed25519": true,
+		"rsa":     true,
+		"ecdsa":   true,
+	}
+	if !validKeyTypes[keyType] {
+		return nil, fmt.Errorf("invalid key type: %s (valid: ed25519, rsa, ecdsa)", keyType)
 	}
 
 	// Handle hostname:port format
@@ -116,6 +131,7 @@ func parseTarget(target, port string) (*Config, error) {
 		Port:     port,
 		Username: username,
 		KeyPath:  filepath.Join(usr.HomeDir, ".ssh"),
+		KeyType:  keyType,
 	}, nil
 }
 
@@ -126,11 +142,11 @@ func run(config *Config) error {
 	}
 
 	// Generate key if it doesn't exist
-	privateKeyPath := filepath.Join(config.KeyPath, "id_ed25519")
+	privateKeyPath := filepath.Join(config.KeyPath, fmt.Sprintf("id_%s", config.KeyType))
 	publicKeyPath := privateKeyPath + ".pub"
 
 	if !fileExists(privateKeyPath) {
-		if err := generateKeyPair(privateKeyPath, publicKeyPath); err != nil {
+		if err := generateKeyPair(privateKeyPath, publicKeyPath, config.KeyType); err != nil {
 			return fmt.Errorf("failed to generate key pair: %w", err)
 		}
 	}
@@ -161,11 +177,49 @@ func fileExists(path string) bool {
 	return !os.IsNotExist(err)
 }
 
-func generateKeyPair(privateKeyPath, publicKeyPath string) error {
-	// Generate Ed25519 key pair
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return fmt.Errorf("failed to generate key: %w", err)
+func generateKeyPair(privateKeyPath, publicKeyPath, keyType string) error {
+	var sshPublicKey ssh.PublicKey
+	var privateKey interface{}
+
+	switch keyType {
+	case "ed25519":
+		// Generate Ed25519 key pair
+		publicKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return fmt.Errorf("failed to generate ed25519 key: %w", err)
+		}
+		privateKey = privKey
+		sshPublicKey, err = ssh.NewPublicKey(publicKey)
+		if err != nil {
+			return fmt.Errorf("failed to create SSH public key: %w", err)
+		}
+
+	case "rsa":
+		// Generate RSA key pair (4096 bits for security)
+		rsaKey, err := rsa.GenerateKey(rand.Reader, 4096)
+		if err != nil {
+			return fmt.Errorf("failed to generate RSA key: %w", err)
+		}
+		privateKey = rsaKey
+		sshPublicKey, err = ssh.NewPublicKey(&rsaKey.PublicKey)
+		if err != nil {
+			return fmt.Errorf("failed to create SSH public key: %w", err)
+		}
+
+	case "ecdsa":
+		// Generate ECDSA key pair (P-256 curve)
+		ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return fmt.Errorf("failed to generate ECDSA key: %w", err)
+		}
+		privateKey = ecdsaKey
+		sshPublicKey, err = ssh.NewPublicKey(&ecdsaKey.PublicKey)
+		if err != nil {
+			return fmt.Errorf("failed to create SSH public key: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("unsupported key type: %s", keyType)
 	}
 
 	// Convert private key to OpenSSH format
@@ -177,12 +231,6 @@ func generateKeyPair(privateKeyPath, publicKeyPath string) error {
 	// Write private key
 	if err := os.WriteFile(privateKeyPath, pem.EncodeToMemory(privKeyBytes), 0600); err != nil {
 		return fmt.Errorf("failed to write private key: %w", err)
-	}
-
-	// Convert public key to SSH format
-	sshPublicKey, err := ssh.NewPublicKey(publicKey)
-	if err != nil {
-		return fmt.Errorf("failed to create SSH public key: %w", err)
 	}
 
 	// Write public key
