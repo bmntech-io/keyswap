@@ -12,16 +12,32 @@ A simple CLI tool to automatically exchange SSH keys with remote servers.
 
 ## Installation
 
+### Quick install (Linux/macOS)
+```bash
+curl -sSL https://raw.githubusercontent.com/bmntech-io/keyswap/main/install.sh | bash
+```
+
+### From releases
+Download the latest binary from [releases](https://github.com/bmntech-io/keyswap/releases):
+
+```bash
+# Linux/macOS
+curl -L -o keyswap https://github.com/bmntech-io/keyswap/releases/latest/download/keyswap-linux-amd64
+chmod +x keyswap
+sudo mv keyswap /usr/local/bin/
+```
+
 ### From source
 ```bash
-git clone https://github.com/yourusername/keyswap
+git clone https://github.com/bmntech-io/keyswap
 cd keyswap
 go build -o keyswap .
+sudo mv keyswap /usr/local/bin/
 ```
 
 ### Using go install
 ```bash
-go install github.com/yourusername/keyswap@latest
+go install github.com/bmntech-io/keyswap@latest
 ```
 
 ## Usage
